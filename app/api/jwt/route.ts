@@ -9,8 +9,16 @@ function getRSAKey(): string {
   // Production: Use base64-encoded key from environment
   if (process.env.SNOWFLAKE_PRIVATE_KEY_BASE64) {
     console.log('Using SNOWFLAKE_PRIVATE_KEY_BASE64 from environment');
-    const keyBuffer = Buffer.from(process.env.SNOWFLAKE_PRIVATE_KEY_BASE64, 'base64');
-    return keyBuffer.toString('utf-8');
+    try {
+      const keyBuffer = Buffer.from(process.env.SNOWFLAKE_PRIVATE_KEY_BASE64, 'base64');
+      const keyString = keyBuffer.toString('utf-8');
+      console.log('Key decoded, first 50 chars:', keyString.substring(0, 50));
+      console.log('Key decoded, last 50 chars:', keyString.substring(keyString.length - 50));
+      return keyString;
+    } catch (error) {
+      console.error('Failed to decode base64 key:', error);
+      throw error;
+    }
   }
   
   // Alternative: Direct key from environment
@@ -59,16 +67,49 @@ export async function GET() {
     console.log('Loading RSA key...');
     
     // Get RSA key
-    const rsaKey = getRSAKey();
-    console.log('RSA key loaded successfully, length:', rsaKey.length);
+    const rsaKeyString = getRSAKey();
+    console.log('RSA key loaded successfully, length:', rsaKeyString.length);
     
     console.log('Creating private key object...');
     
-    // Create private key object
-    const privateKey = createPrivateKey({
-      key: rsaKey,
-      format: 'pem',
-    });
+    // Try to create private key with explicit format options
+    let privateKey;
+    try {
+      // First attempt: Try as PKCS8 format
+      privateKey = createPrivateKey({
+        key: rsaKeyString,
+        format: 'pem',
+        type: 'pkcs8',
+      });
+      console.log('Successfully created private key (PKCS8)');
+    } catch (pkcs8Error) {
+      console.log('PKCS8 failed, trying PKCS1:', pkcs8Error);
+      try {
+        // Second attempt: Try as PKCS1 format
+        privateKey = createPrivateKey({
+          key: rsaKeyString,
+          format: 'pem',
+          type: 'pkcs1',
+        });
+        console.log('Successfully created private key (PKCS1)');
+      } catch (pkcs1Error) {
+        console.log('PKCS1 failed, trying without type:', pkcs1Error);
+        try {
+          // Third attempt: Let Node.js auto-detect
+          privateKey = createPrivateKey({
+            key: rsaKeyString,
+            format: 'pem',
+          });
+          console.log('Successfully created private key (auto-detect)');
+        } catch (autoError) {
+          console.error('All key format attempts failed');
+          console.error('PKCS8 error:', pkcs8Error);
+          console.error('PKCS1 error:', pkcs1Error);
+          console.error('Auto-detect error:', autoError);
+          throw new Error(`Failed to parse private key. Last error: ${autoError}`);
+        }
+      }
+    }
     
     console.log('Extracting public key...');
     
@@ -109,8 +150,13 @@ export async function GET() {
     
     console.log('Signing JWT...');
     
-    // Sign JWT
-    const token = jwt.sign(payload, rsaKey, { 
+    // Sign JWT - export the key in PEM format for jwt.sign
+    const privateKeyPem = privateKey.export({
+      type: 'pkcs8',
+      format: 'pem'
+    });
+    
+    const token = jwt.sign(payload, privateKeyPem, { 
       algorithm: 'RS256' 
     });
     
