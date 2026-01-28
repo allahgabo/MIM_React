@@ -1,19 +1,9 @@
 "use client"
 
-// useAgentAPIQuery.ts - WITH DEBUG LOGGING FOR 399504 ERROR
-
 import React from "react";
 import { events } from 'fetch-event-stream';
-import { 
-    AgentMessage, 
-    AgentMessageRole, 
-    AgentMessageToolResultsContent, 
-    AgentMessageToolUseContent 
-} from "./types";
-import { 
-    AgentRequestBuildParams, 
-    buildStandardRequestParams 
-} from "./functions/buildStandardRequestParams";
+import { AgentMessage, AgentMessageRole, AgentMessageToolResultsContent, AgentMessageToolUseContent } from "./types";
+import { AgentRequestBuildParams, buildStandardRequestParams } from "./functions/buildStandardRequestParams";
 import { appendTextToAssistantMessage } from "./functions/assistant/appendTextToAssistantMessage";
 import { getEmptyAssistantMessage } from "./functions/assistant/getEmptyAssistantMessage";
 import { getSQLExecUserMessage } from "./functions/assistant/getSQLExecUserMessage";
@@ -29,7 +19,7 @@ import shortUUID from "short-uuid";
 
 export interface AgentApiQueryParams extends Omit<AgentRequestBuildParams, "messages" | "input"> {
     snowflakeUrl: string;
-    searchService?: string;
+    searchService: string;  // ✅ ADDED - THIS IS REQUIRED!
 }
 
 export enum AgentApiState {
@@ -44,15 +34,9 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
     const {
         authToken,
         snowflakeUrl,
-        searchService,
+        searchService,  // ✅ ADDED - Extract searchService
         ...agentRequestParams
     } = params;
-
-    // 🔍 DEBUG: Log parameters on hook initialization
-    console.log('🔍 useAgentAPIQuery initialized with:');
-    console.log('  - searchService:', searchService);
-    console.log('  - snowflakeUrl:', snowflakeUrl);
-    console.log('  - toolResources:', agentRequestParams.toolResources);
 
     const { toolResources } = agentRequestParams;
 
@@ -61,17 +45,8 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
     const [latestAssistantMessageId, setLatestAssistantMessageId] = React.useState<string | null>(null);
 
     const handleNewMessage = React.useCallback(async (input: string) => {
-        console.log('🔍 handleNewMessage called with:', input);
-        console.log('🔍 Current searchService value:', searchService);
-        
         if (!authToken) {
             toast.error("Authorization failed: Token is not defined");
-            return;
-        }
-
-        if (!searchService) {
-            console.error('❌ CRITICAL: searchService is undefined!');
-            toast.error("Configuration error: search_service is not defined. Please set the searchService parameter.");
             return;
         }
 
@@ -87,62 +62,35 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
 
         setMessages(newMessages);
 
-        const requestParams = buildStandardRequestParams({
+        const { headers, body } = buildStandardRequestParams({
             authToken,
             messages: removeFetchedTableFromMessages(newMessages),
             input,
             ...agentRequestParams,
         });
 
-        const { headers, body } = requestParams;
-
-        console.log('🔍 Before adding search_service:');
-        console.log('  - body.tool_resources:', JSON.stringify(body.tool_resources, null, 2));
-
-        // CRITICAL FIX: Ensure search_service is included
-        if (searchService && body.tool_resources) {
+        // ✅ CRITICAL FIX: Add search_service to tool_resources
+        if (body.tool_resources) {
             body.tool_resources = {
                 ...body.tool_resources,
                 search1: {
                     ...(body.tool_resources.search1 || {}),
-                    search_service: searchService
+                    search_service: searchService  // ✅ THIS FIXES ERROR 399504
                 }
             };
-            console.log('✅ Added search_service to request');
-        } else if (!searchService) {
-            console.error('❌ searchService is falsy, cannot add to request');
-        } else if (!body.tool_resources) {
-            console.error('❌ body.tool_resources is falsy');
         }
-
-        console.log('🔍 After adding search_service:');
-        console.log('  - body.tool_resources:', JSON.stringify(body.tool_resources, null, 2));
-        console.log('  - search_service value:', body.tool_resources?.search1?.search_service);
-
-        console.log('🔍 Full request body:', JSON.stringify(body, null, 2));
 
         setAgentState(AgentApiState.LOADING);
         
         try {
-            console.log('🔍 Making fetch request to:', `${snowflakeUrl}/api/v2/cortex/agent:run`);
-            
             const response = await fetch(
                 `${snowflakeUrl}/api/v2/cortex/agent:run`,
                 { method: 'POST', headers, body: JSON.stringify(body) }
             );
 
-            console.log('🔍 Response status:', response.status);
-
             if (!response.ok) {
                 const errorData = await response.json();
-                console.error('❌ API Error Response:', errorData);
-                
-                if (errorData.code === '399504') {
-                    toast.error("Error 399504: search_service not provided. Check console for debug info.");
-                } else {
-                    toast.error(errorData.message || `HTTP error! status: ${response.status}`);
-                }
-                
+                toast.error(errorData.message || `HTTP error! status: ${response.status}`);
                 setAgentState(AgentApiState.IDLE);
                 return;
             }
@@ -235,43 +183,35 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                                 const d2aUserMessageId = shortUUID.generate();
                                 const sqlExecUserMessage = getSQLExecUserMessage(d2aUserMessageId, tableData.statementHandle);
                                 
-                                const d2aRequestParams = buildStandardRequestParams({
+                                const { headers: d2aHeaders, body: d2aBody } = buildStandardRequestParams({
                                     authToken,
                                     messages: removeFetchedTableFromMessages([...newMessages, newAssistantMessage, sqlExecUserMessage]),
                                     input,
                                     ...agentRequestParams,
                                 });
 
-                                console.log('🔍 Data2Answer: Before adding search_service');
-                                
-                                // CRITICAL FIX: Also add search_service to data2answer request
-                                if (searchService && d2aRequestParams.body.tool_resources) {
-                                    d2aRequestParams.body.tool_resources = {
-                                        ...d2aRequestParams.body.tool_resources,
+                                // ✅ CRITICAL FIX: Also add search_service to data2answer request
+                                if (d2aBody.tool_resources) {
+                                    d2aBody.tool_resources = {
+                                        ...d2aBody.tool_resources,
                                         search1: {
-                                            ...(d2aRequestParams.body.tool_resources.search1 || {}),
-                                            search_service: searchService
+                                            ...(d2aBody.tool_resources.search1 || {}),
+                                            search_service: searchService  // ✅ ADD HERE TOO
                                         }
                                     };
-                                    console.log('✅ Data2Answer: Added search_service');
                                 }
-
-                                console.log('🔍 Data2Answer request body:', JSON.stringify(d2aRequestParams.body, null, 2));
 
                                 setMessages(appendUserMessageToMessagesList(sqlExecUserMessage));
                                 setAgentState(AgentApiState.RUNNING_ANALYTICS);
                                 
                                 const data2AnalyticsResponse = await fetch(`${snowflakeUrl}/api/v2/cortex/agent:run`, {
                                     method: 'POST',
-                                    headers: d2aRequestParams.headers,
-                                    body: JSON.stringify(d2aRequestParams.body),
+                                    headers: d2aHeaders,
+                                    body: JSON.stringify(d2aBody),
                                 });
-                                
-                                console.log("🔍 Data2Answer response status:", data2AnalyticsResponse.status);
 
                                 if (!data2AnalyticsResponse.ok) {
                                     const errorData = await data2AnalyticsResponse.json();
-                                    console.error('❌ Data2Answer error:', errorData);
                                     toast.error(errorData.message || "Analytics processing failed");
                                     setAgentState(AgentApiState.IDLE);
                                     return;
