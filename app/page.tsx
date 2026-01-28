@@ -27,7 +27,7 @@ export default function Home() {
     tools,
     toolResources: {
       "analyst1": { "semantic_model_file": process.env.NEXT_PUBLIC_SEMANTIC_MODEL_PATH },
-      "search1": { "name": process.env.NEXT_PUBLIC_SEARCH_SERVICE_PATH, max_results: 10 }
+      "search1": { "search_service": process.env.NEXT_PUBLIC_SEARCH_SERVICE_PATH, max_results: 10 }
     }
   })
 
