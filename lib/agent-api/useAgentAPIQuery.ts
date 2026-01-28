@@ -19,7 +19,6 @@ import shortUUID from "short-uuid";
 
 export interface AgentApiQueryParams extends Omit<AgentRequestBuildParams, "messages" | "input"> {
     snowflakeUrl: string;
-    searchService: string;  // ✅ ADDED - THIS IS REQUIRED!
 }
 
 export enum AgentApiState {
@@ -34,7 +33,6 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
     const {
         authToken,
         snowflakeUrl,
-        searchService,  // ✅ ADDED - Extract searchService
         ...agentRequestParams
     } = params;
 
@@ -69,224 +67,167 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
             ...agentRequestParams,
         });
 
-        // ✅ CRITICAL FIX: Add search_service to tool_resources
-        if (body.tool_resources) {
-            body.tool_resources = {
-                ...body.tool_resources,
-                search1: {
-                    ...(body.tool_resources.search1 || {}),
-                    search_service: searchService  // ✅ THIS FIXES ERROR 399504
-                }
-            };
-        }
-
         setAgentState(AgentApiState.LOADING);
-        
-        try {
-            const response = await fetch(
-                `${snowflakeUrl}/api/v2/cortex/agent:run`,
-                { method: 'POST', headers, body: JSON.stringify(body) }
-            );
+        const response = await fetch(
+            `${snowflakeUrl}/api/v2/cortex/agent:run`,
+            { method: 'POST', headers, body: JSON.stringify(body) }
+        );
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                toast.error(errorData.message || `HTTP error! status: ${response.status}`);
+        const latestAssistantMessageId = shortUUID.generate();
+        setLatestAssistantMessageId(latestAssistantMessageId);
+        const newAssistantMessage = getEmptyAssistantMessage(latestAssistantMessageId);
+
+        const streamEvents = events(response);
+        for await (const event of streamEvents) {
+            if (event.data === "[DONE]") {
                 setAgentState(AgentApiState.IDLE);
                 return;
             }
 
-            const latestAssistantMessageId = shortUUID.generate();
-            setLatestAssistantMessageId(latestAssistantMessageId);
-            const newAssistantMessage = getEmptyAssistantMessage(latestAssistantMessageId);
+            if (JSON.parse(event.data!).code) {
+                toast.error(JSON.parse(event.data!).message);
+                setAgentState(AgentApiState.IDLE);
+                return;
+            }
 
-            const streamEvents = events(response);
-            for await (const event of streamEvents) {
-                if (event.data === "[DONE]") {
-                    setAgentState(AgentApiState.IDLE);
-                    return;
+            const {
+                delta: {
+                    content: [textOrToolUseResponse, toolResultsResponse]
                 }
+            } = JSON.parse(event.data!);
 
-                const parsedData = JSON.parse(event.data!);
-                
-                if (parsedData.code) {
-                    toast.error(parsedData.message);
-                    setAgentState(AgentApiState.IDLE);
-                    return;
-                }
+            const { type, text } = textOrToolUseResponse;
 
-                const {
-                    delta: {
-                        content: [textOrToolUseResponse, toolResultsResponse]
-                    }
-                } = parsedData;
+            // normal text response
+            if (type === "text" && text !== undefined) {
+                appendTextToAssistantMessage(newAssistantMessage, text);
+                setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
+            } else if (type === "tool_use") {
+                appendToolResponseToAssistantMessage(newAssistantMessage, textOrToolUseResponse);
+                setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
 
-                const { type, text } = textOrToolUseResponse;
-
-                if (type === "text" && text !== undefined) {
-                    appendTextToAssistantMessage(newAssistantMessage, text);
-                    setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
-                } else if (type === "tool_use") {
-                    appendToolResponseToAssistantMessage(newAssistantMessage, textOrToolUseResponse);
+                // a tool result (analyst / search)
+                if (toolResultsResponse?.tool_results) {
+                    appendToolResponseToAssistantMessage(newAssistantMessage, toolResultsResponse);
                     setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
 
-                    if (toolResultsResponse?.tool_results) {
-                        appendToolResponseToAssistantMessage(newAssistantMessage, toolResultsResponse);
+                    const statement = toolResultsResponse.tool_results.content[0]?.json?.sql;
+
+                    // if analyst returns a sql statement, run sql_exec tool
+                    if (statement) {
+                        setAgentState(AgentApiState.EXECUTING_SQL);
+                        const tableResponse = await fetch(`${snowflakeUrl}/api/v2/statements`, {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                "statement": statement,
+                                "parameters": {
+                                    "BINARY_OUTPUT_FORMAT": "HEX",
+                                    "DATE_OUTPUT_FORMAT": "YYYY-Mon-DD",
+                                    "TIME_OUTPUT_FORMAT": "HH24:MI:SS",
+                                    "TIMESTAMP_LTZ_OUTPUT_FORMAT": "",
+                                    "TIMESTAMP_NTZ_OUTPUT_FORMAT": "YYYY-MM-DD HH24:MI:SS.FF3",
+                                    "TIMESTAMP_TZ_OUTPUT_FORMAT": "",
+                                    "TIMESTAMP_OUTPUT_FORMAT": "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM",
+                                    "TIMEZONE": "America/Los_Angeles",
+                                }
+                            }),
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Accept": "application/json",
+                                "User-Agent": "myApplicationName/1.0",
+                                "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
+                                "Authorization": `Bearer ${authToken}`,
+                            }
+                        })
+
+                        const tableData = await tableResponse.json();
+
+                        if (tableData.code && tableData.message?.includes("Asynchronous execution in progress.")) {
+                            toast.error("SQL execution took too long to respond. Please try again.");
+                            return;
+                        }
+
+                        appendFetchedTableToAssistantMessage(newAssistantMessage, tableData, true);
                         setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
 
-                        const statement = toolResultsResponse.tool_results.content[0]?.json?.sql;
+                        // run data2answer
+                        const latestUserMessageId = shortUUID.generate();
+                        const sqlExecUserMessage = getSQLExecUserMessage(latestUserMessageId, tableData.statementHandle)
+                        const { headers, body } = buildStandardRequestParams({
+                            authToken,
+                            messages: removeFetchedTableFromMessages([...newMessages, newAssistantMessage, sqlExecUserMessage]),
+                            input,
+                            ...agentRequestParams,
+                        });
+                        setMessages(appendUserMessageToMessagesList(sqlExecUserMessage));
+                        setAgentState(AgentApiState.RUNNING_ANALYTICS);
+                        const data2AnalyticsResponse = await fetch(`${snowflakeUrl}/api/v2/cortex/agent:run`, {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify(body),
+                        })
 
-                        if (statement) {
-                            setAgentState(AgentApiState.EXECUTING_SQL);
-                            
-                            try {
-                                const tableResponse = await fetch(`${snowflakeUrl}/api/v2/statements`, {
-                                    method: 'POST',
-                                    body: JSON.stringify({
-                                        "statement": statement,
-                                        "parameters": {
-                                            "BINARY_OUTPUT_FORMAT": "HEX",
-                                            "DATE_OUTPUT_FORMAT": "YYYY-Mon-DD",
-                                            "TIME_OUTPUT_FORMAT": "HH24:MI:SS",
-                                            "TIMESTAMP_LTZ_OUTPUT_FORMAT": "",
-                                            "TIMESTAMP_NTZ_OUTPUT_FORMAT": "YYYY-MM-DD HH24:MI:SS.FF3",
-                                            "TIMESTAMP_TZ_OUTPUT_FORMAT": "",
-                                            "TIMESTAMP_OUTPUT_FORMAT": "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM",
-                                            "TIMEZONE": "America/Los_Angeles",
-                                        }
-                                    }),
-                                    headers: {
-                                        "Content-Type": "application/json",
-                                        "Accept": "application/json",
-                                        "User-Agent": "myApplicationName/1.0",
-                                        "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
-                                        "Authorization": `Bearer ${authToken}`,
-                                    }
-                                });
+                        const data2AnalyticsStreamEvents = events(data2AnalyticsResponse);
 
-                                const tableData = await tableResponse.json();
-
-                                if (tableData.code && tableData.message?.includes("Asynchronous execution in progress.")) {
-                                    toast.error("SQL execution took too long to respond. Please try again.");
-                                    setAgentState(AgentApiState.IDLE);
-                                    return;
-                                }
-
-                                if (tableData.code) {
-                                    toast.error(`SQL execution error: ${tableData.message}`);
-                                    setAgentState(AgentApiState.IDLE);
-                                    return;
-                                }
-
-                                appendFetchedTableToAssistantMessage(newAssistantMessage, tableData, true);
-                                setMessages(appendAssistantMessageToMessagesList(newAssistantMessage));
-
-                                const d2aUserMessageId = shortUUID.generate();
-                                const sqlExecUserMessage = getSQLExecUserMessage(d2aUserMessageId, tableData.statementHandle);
-                                
-                                const { headers: d2aHeaders, body: d2aBody } = buildStandardRequestParams({
-                                    authToken,
-                                    messages: removeFetchedTableFromMessages([...newMessages, newAssistantMessage, sqlExecUserMessage]),
-                                    input,
-                                    ...agentRequestParams,
-                                });
-
-                                // ✅ CRITICAL FIX: Also add search_service to data2answer request
-                                if (d2aBody.tool_resources) {
-                                    d2aBody.tool_resources = {
-                                        ...d2aBody.tool_resources,
-                                        search1: {
-                                            ...(d2aBody.tool_resources.search1 || {}),
-                                            search_service: searchService  // ✅ ADD HERE TOO
-                                        }
-                                    };
-                                }
-
-                                setMessages(appendUserMessageToMessagesList(sqlExecUserMessage));
-                                setAgentState(AgentApiState.RUNNING_ANALYTICS);
-                                
-                                const data2AnalyticsResponse = await fetch(`${snowflakeUrl}/api/v2/cortex/agent:run`, {
-                                    method: 'POST',
-                                    headers: d2aHeaders,
-                                    body: JSON.stringify(d2aBody),
-                                });
-
-                                if (!data2AnalyticsResponse.ok) {
-                                    const errorData = await data2AnalyticsResponse.json();
-                                    toast.error(errorData.message || "Analytics processing failed");
-                                    setAgentState(AgentApiState.IDLE);
-                                    return;
-                                }
-
-                                const data2AnalyticsStreamEvents = events(data2AnalyticsResponse);
-
-                                const latestAssistantD2AMessageId = shortUUID.generate();
-                                const newAssistantD2AMessage = getEmptyAssistantMessage(latestAssistantD2AMessageId);
-                                
-                                for await (const event of data2AnalyticsStreamEvents) {
-                                    if (event.data === "[DONE]") {
-                                        setAgentState(AgentApiState.IDLE);
-                                        return;
-                                    }
-
-                                    const d2aParsedData = JSON.parse(event.data!);
-                                    
-                                    if (d2aParsedData.code) {
-                                        toast.error(d2aParsedData.message);
-                                        setAgentState(AgentApiState.IDLE);
-                                        return;
-                                    }
-
-                                    const {
-                                        delta: {
-                                            content: data2Contents
-                                        }
-                                    } = d2aParsedData;
-
-                                    data2Contents.forEach((content: AgentMessage['content'][number]) => {
-                                        if ('text' in content) {
-                                            appendTextToAssistantMessage(newAssistantD2AMessage, content.text);
-                                            setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
-                                        } else if ('chart' in content) {
-                                            appendChartToAssistantMessage(newAssistantD2AMessage, content.chart);
-                                            setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
-                                        } else if ('table' in content) {
-                                            appendTableToAssistantMessage(newAssistantD2AMessage, content.table);
-                                            setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
-                                            appendFetchedTableToAssistantMessage(newAssistantD2AMessage, tableData, false);
-                                            setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
-                                        }
-                                        else {
-                                            const tool_results = (content as AgentMessageToolResultsContent).tool_results;
-                                            if (tool_results) {
-                                                appendToolResponseToAssistantMessage(newAssistantD2AMessage, content);
-                                                setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
-                                            }
-                                        }
-                                    });
-                                }
-                            } catch (sqlError) {
-                                console.error("SQL execution error:", sqlError);
-                                toast.error("Failed to execute SQL query");
+                        const latestAssistantD2AMessageId = shortUUID.generate();
+                        const newAssistantD2AMessage = getEmptyAssistantMessage(latestAssistantD2AMessageId);
+                        for await (const event of data2AnalyticsStreamEvents) {
+                            if (event.data === "[DONE]") {
                                 setAgentState(AgentApiState.IDLE);
                                 return;
                             }
+
+                            if (JSON.parse(event.data!).code) {
+                                toast.error(JSON.parse(event.data!).message);
+                                setAgentState(AgentApiState.IDLE);
+                                return;
+                            }
+
+                            const {
+                                delta: {
+                                    content: data2Contents
+                                }
+                            } = JSON.parse(event.data!);
+
+                            data2Contents.forEach((content: AgentMessage['content'][number]) => {
+                                if ('text' in content) {
+                                    appendTextToAssistantMessage(newAssistantD2AMessage, content.text);
+                                    setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
+                                } else if ('chart' in content) {
+                                    appendChartToAssistantMessage(newAssistantD2AMessage, content.chart);
+                                    setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
+                                } else if ('table' in content) {
+                                    appendTableToAssistantMessage(newAssistantD2AMessage, content.table);
+                                    setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
+                                    // When table type is returned, it means the table should be visualized.
+                                    // In future, "table" type will contain "data" field enabling to render the table directly.
+                                    // For now, we reuse the previously fetched data.
+                                    appendFetchedTableToAssistantMessage(newAssistantD2AMessage, tableData, false);
+                                    setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
+                                }
+                                else {
+                                    const tool_results = (content as AgentMessageToolResultsContent).tool_results;
+                                    if (tool_results) {
+                                        appendToolResponseToAssistantMessage(newAssistantD2AMessage, content);
+                                        setMessages(appendAssistantMessageToMessagesList(newAssistantD2AMessage));
+                                    }
+                                }
+                            })
                         }
                     }
-                } else {
-                    console.warn("Unexpected response from agent API: ", event.data);
-                    toast.error("Unexpected response from agent API");
                 }
-
-                if ((textOrToolUseResponse as AgentMessageToolUseContent).tool_use?.name !== "search1") {
-                    setAgentState(AgentApiState.STREAMING);
-                }
+            } else {
+                console.warn("Unexpected response from agent API: ", event.data);
+                toast.error("Unexpected response from agent API");
             }
-        } catch (error) {
-            console.error("Agent API error:", error);
-            toast.error("Failed to communicate with agent API");
-            setAgentState(AgentApiState.IDLE);
+
+            // search returns citations first then text after. A bit of buffer time in between
+            // making sure the state transitions smoothly
+            if ((textOrToolUseResponse as AgentMessageToolUseContent).tool_use?.name !== "search1") {
+                setAgentState(AgentApiState.STREAMING);
+            }
         }
-    }, [agentRequestParams, authToken, messages, snowflakeUrl, toolResources, searchService]);
+    }, [agentRequestParams, authToken, messages, snowflakeUrl, toolResources]);
 
     return {
         agentState,
