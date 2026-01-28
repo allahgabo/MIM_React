@@ -5,51 +5,56 @@ import fs from 'fs';
 import path from 'path';
 
 // Get RSA key from environment or file
-function getRSAKey(): string {
-  // Production: Use base64-encoded key from environment
-  if (process.env.SNOWFLAKE_PRIVATE_KEY_BASE64) {
-    console.log('Using SNOWFLAKE_PRIVATE_KEY_BASE64 from environment');
-    try {
-      const keyBuffer = Buffer.from(process.env.SNOWFLAKE_PRIVATE_KEY_BASE64, 'base64');
-      const keyString = keyBuffer.toString('utf-8');
-      console.log('Key decoded, first 50 chars:', keyString.substring(0, 50));
-      console.log('Key decoded, last 50 chars:', keyString.substring(keyString.length - 50));
-      return keyString;
-    } catch (error) {
-      console.error('Failed to decode base64 key:', error);
-      throw error;
-    }
-  }
+function getRSAKey(): Buffer | string {
+  console.log('=== Getting RSA Key ===');
   
-  // Alternative: Direct key from environment
+  // Priority 1: Use direct key from environment (most reliable)
   if (process.env.SNOWFLAKE_PRIVATE_KEY) {
-    console.log('Using SNOWFLAKE_PRIVATE_KEY from environment');
+    console.log('✓ Using SNOWFLAKE_PRIVATE_KEY from environment');
     return process.env.SNOWFLAKE_PRIVATE_KEY;
   }
   
-  // Development: Read from file
-  const keyPath = path.join(process.cwd(), 'rsa_key.p8');
-  if (fs.existsSync(keyPath)) {
-    console.log('Using rsa_key.p8 file from local filesystem');
-    return fs.readFileSync(keyPath, 'utf-8');
+  // Priority 2: Use base64-encoded key from environment
+  if (process.env.SNOWFLAKE_PRIVATE_KEY_BASE64) {
+    console.log('✓ Using SNOWFLAKE_PRIVATE_KEY_BASE64 from environment');
+    try {
+      const keyBuffer = Buffer.from(process.env.SNOWFLAKE_PRIVATE_KEY_BASE64, 'base64');
+      const keyString = keyBuffer.toString('utf-8');
+      console.log('✓ Base64 key decoded successfully');
+      return keyString;
+    } catch (error) {
+      console.error('✗ Failed to decode base64 key:', error);
+      throw new Error('Failed to decode base64 key');
+    }
   }
   
-  throw new Error('RSA key not found. Set SNOWFLAKE_PRIVATE_KEY_BASE64 environment variable.');
+  // Priority 3: Development - Read from file
+  const keyPath = path.join(process.cwd(), 'rsa_key.p8');
+  if (fs.existsSync(keyPath)) {
+    console.log('✓ Using rsa_key.p8 file from local filesystem');
+    return fs.readFileSync(keyPath);
+  }
+  
+  console.error('✗ No RSA key found in any location');
+  throw new Error('RSA key not found. Set SNOWFLAKE_PRIVATE_KEY environment variable.');
 }
 
 export async function GET() {
   try {
+    console.log('\n=== JWT Generation Started ===');
+    
     // Get environment variables
     const SNOWFLAKE_ACCOUNT = process.env.SNOWFLAKE_ACCOUNT;
     const SNOWFLAKE_USER = process.env.SNOWFLAKE_USER;
+    const SNOWFLAKE_RSA_PASSPHRASE = process.env.SNOWFLAKE_RSA_PASSPHRASE || '';
     
-    console.log('=== JWT Generation Started ===');
     console.log('SNOWFLAKE_ACCOUNT:', SNOWFLAKE_ACCOUNT);
     console.log('SNOWFLAKE_USER:', SNOWFLAKE_USER);
+    console.log('Has passphrase:', SNOWFLAKE_RSA_PASSPHRASE ? 'Yes' : 'No');
     
     // Validate required variables
     if (!SNOWFLAKE_ACCOUNT) {
-      console.error('ERROR: SNOWFLAKE_ACCOUNT not set');
+      console.error('✗ SNOWFLAKE_ACCOUNT not set');
       return NextResponse.json(
         { error: 'SNOWFLAKE_ACCOUNT environment variable not set' },
         { status: 500 }
@@ -57,78 +62,69 @@ export async function GET() {
     }
     
     if (!SNOWFLAKE_USER) {
-      console.error('ERROR: SNOWFLAKE_USER not set');
+      console.error('✗ SNOWFLAKE_USER not set');
       return NextResponse.json(
         { error: 'SNOWFLAKE_USER environment variable not set' },
         { status: 500 }
       );
     }
     
-    console.log('Loading RSA key...');
-    
     // Get RSA key
-    const rsaKeyString = getRSAKey();
-    console.log('RSA key loaded successfully, length:', rsaKeyString.length);
+    const rsaKey = getRSAKey();
+    console.log('✓ RSA key loaded');
     
+    // Create private key object
     console.log('Creating private key object...');
-    
-    // Try to create private key with explicit format options
     let privateKey;
+    
     try {
-      // First attempt: Try as PKCS8 format
-      privateKey = createPrivateKey({
-        key: rsaKeyString,
-        format: 'pem',
-        type: 'pkcs8',
-      });
-      console.log('Successfully created private key (PKCS8)');
-    } catch (pkcs8Error) {
-      console.log('PKCS8 failed, trying PKCS1:', pkcs8Error);
-      try {
-        // Second attempt: Try as PKCS1 format
+      // If there's a passphrase, use it
+      if (SNOWFLAKE_RSA_PASSPHRASE) {
+        console.log('Attempting to create key with passphrase...');
         privateKey = createPrivateKey({
-          key: rsaKeyString,
+          key: rsaKey,
           format: 'pem',
-          type: 'pkcs1',
+          passphrase: SNOWFLAKE_RSA_PASSPHRASE
         });
-        console.log('Successfully created private key (PKCS1)');
-      } catch (pkcs1Error) {
-        console.log('PKCS1 failed, trying without type:', pkcs1Error);
-        try {
-          // Third attempt: Let Node.js auto-detect
-          privateKey = createPrivateKey({
-            key: rsaKeyString,
-            format: 'pem',
-          });
-          console.log('Successfully created private key (auto-detect)');
-        } catch (autoError) {
-          console.error('All key format attempts failed');
-          console.error('PKCS8 error:', pkcs8Error);
-          console.error('PKCS1 error:', pkcs1Error);
-          console.error('Auto-detect error:', autoError);
-          throw new Error(`Failed to parse private key. Last error: ${autoError}`);
-        }
+        console.log('✓ Private key created with passphrase');
+      } else {
+        // No passphrase
+        console.log('Attempting to create key without passphrase...');
+        privateKey = createPrivateKey({
+          key: rsaKey,
+          format: 'pem'
+        });
+        console.log('✓ Private key created without passphrase');
       }
+    } catch (error) {
+      console.error('✗ Failed to create private key');
+      console.error('Error details:', error);
+      
+      // If it failed and we didn't try a passphrase, suggest checking if key is encrypted
+      if (!SNOWFLAKE_RSA_PASSPHRASE) {
+        throw new Error('Failed to parse private key. If your key is encrypted, set SNOWFLAKE_RSA_PASSPHRASE.');
+      }
+      
+      throw new Error(`Failed to parse private key: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
     
-    console.log('Extracting public key...');
-    
     // Extract public key
+    console.log('Extracting public key...');
     const publicKey = createPublicKey(privateKey);
     const publicKeyRaw = publicKey.export({ 
       type: 'spki', 
       format: 'der' 
     });
-    
-    console.log('Creating fingerprint...');
+    console.log('✓ Public key extracted');
     
     // Create fingerprint
+    console.log('Creating fingerprint...');
     const sha256Hash = createHash('sha256')
       .update(publicKeyRaw)
       .digest('base64');
     
     const publicKeyFp = 'SHA256:' + sha256Hash;
-    console.log('Public key fingerprint created');
+    console.log('✓ Fingerprint created:', publicKeyFp.substring(0, 20) + '...');
     
     // Format qualified username
     const account = SNOWFLAKE_ACCOUNT.toUpperCase();
@@ -148,20 +144,16 @@ export async function GET() {
       exp: nowInSeconds + oneHourInSeconds,
     };
     
+    console.log('JWT payload created');
+    
+    // Sign JWT
     console.log('Signing JWT...');
-    
-    // Sign JWT - export the key in PEM format for jwt.sign
-    const privateKeyPem = privateKey.export({
-      type: 'pkcs8',
-      format: 'pem'
-    });
-    
-    const token = jwt.sign(payload, privateKeyPem, { 
+    const token = jwt.sign(payload, privateKey, { 
       algorithm: 'RS256' 
     });
     
-    console.log('JWT created successfully');
-    console.log('=== JWT Generation Completed ===');
+    console.log('✓ JWT created successfully');
+    console.log('=== JWT Generation Completed ===\n');
     
     return NextResponse.json({
       token: {
@@ -171,19 +163,25 @@ export async function GET() {
     });
     
   } catch (error: unknown) {
-    console.error('=== JWT Generation Failed ===');
+    console.error('\n=== JWT Generation Failed ===');
     console.error('Error:', error);
     
     if (error instanceof Error) {
       console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
+      console.error('Error name:', error.name);
+      if (error.stack) {
+        console.error('Stack trace:', error.stack);
+      }
+      
       return NextResponse.json({ 
-        error: error.message 
+        error: error.message,
+        hint: 'Check Render logs for detailed error information'
       }, { status: 500 });
     }
     
     return NextResponse.json({ 
-      error: 'Unknown error' 
+      error: 'Unknown error occurred',
+      hint: 'Check Render logs for detailed error information'
     }, { status: 500 });
   }
 }
