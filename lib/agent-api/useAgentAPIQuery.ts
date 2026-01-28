@@ -166,6 +166,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                             headers,
                             body: JSON.stringify(body),
                         })
+                        console.log("Data2Analytics response received:", data2AnalyticsResponse);
 
                         const data2AnalyticsStreamEvents = events(data2AnalyticsResponse);
 
