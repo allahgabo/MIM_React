@@ -225,7 +225,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
 
             // search returns citations first then text after. A bit of buffer time in between
             // making sure the state transitions smoothly
-            if ((textOrToolUseResponse as AgentMessageToolUseContent).tool_use?.name !== "search1") {
+            if ((textOrToolUseResponse as AgentMessageToolUseContent).tool_use?.name !== "PLANTS_SEARCH") {
                 setAgentState(AgentApiState.STREAMING);
             }
         }
