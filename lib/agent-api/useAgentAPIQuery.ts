@@ -72,6 +72,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
             `${snowflakeUrl}/api/v2/cortex/agent:run`,
             { method: 'POST', headers, body: JSON.stringify(body) }
         );
+        console.log("Agent API response received:", response);  
 
         const latestAssistantMessageId = shortUUID.generate();
         setLatestAssistantMessageId(latestAssistantMessageId);
@@ -166,6 +167,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                             headers,
                             body: JSON.stringify(body),
                         })
+                        console.log("Data2Analytics response received:", data2AnalyticsResponse);
 
                         const data2AnalyticsStreamEvents = events(data2AnalyticsResponse);
 
