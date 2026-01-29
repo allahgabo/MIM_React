@@ -68,10 +68,14 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
         });
 
         setAgentState(AgentApiState.LOADING);
+        const agentUrl = `${snowflakeUrl}/api/v2/cortex/agent:run`;
+        console.log('🚀 [Agent API] POST', agentUrl);
+        console.log('📋 [Agent API] Request body:', JSON.stringify(body, null, 2));
         const response = await fetch(
-            `${snowflakeUrl}/api/v2/cortex/agent:run`,
+            agentUrl,
             { method: 'POST', headers, body: JSON.stringify(body) }
         );
+        console.log('✅ [Agent API] Response status:', response.status, response.statusText);
 
         const latestAssistantMessageId = shortUUID.generate();
         setLatestAssistantMessageId(latestAssistantMessageId);
@@ -79,13 +83,17 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
 
         const streamEvents = events(response);
         for await (const event of streamEvents) {
+            console.log('📡 [Agent API] Stream event:', event.data?.substring(0, 200) || '[empty]');
             if (event.data === "[DONE]") {
+                console.log('✅ [Agent API] Stream complete');
                 setAgentState(AgentApiState.IDLE);
                 return;
             }
 
-            if (JSON.parse(event.data!).code) {
-                toast.error(JSON.parse(event.data!).message);
+            const parsedData = JSON.parse(event.data!);
+            if (parsedData.code) {
+                console.error('❌ [Agent API] Error:', parsedData);
+                toast.error(parsedData.message);
                 setAgentState(AgentApiState.IDLE);
                 return;
             }
@@ -94,7 +102,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                 delta: {
                     content: [textOrToolUseResponse, toolResultsResponse]
                 }
-            } = JSON.parse(event.data!);
+            } = parsedData;
 
             const { type, text } = textOrToolUseResponse;
 
@@ -116,7 +124,10 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                     // if analyst returns a sql statement, run sql_exec tool
                     if (statement) {
                         setAgentState(AgentApiState.EXECUTING_SQL);
-                        const tableResponse = await fetch(`${snowflakeUrl}/api/v2/statements`, {
+                        const statementsUrl = `${snowflakeUrl}/api/v2/statements`;
+                        console.log('🚀 [SQL Exec] POST', statementsUrl);
+                        console.log('📋 [SQL Exec] Statement:', statement);
+                        const tableResponse = await fetch(statementsUrl, {
                             method: 'POST',
                             body: JSON.stringify({
                                 "statement": statement,
@@ -139,10 +150,13 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                                 "Authorization": `Bearer ${authToken}`,
                             }
                         })
+                        console.log('✅ [SQL Exec] Response status:', tableResponse.status, tableResponse.statusText);
 
                         const tableData = await tableResponse.json();
+                        console.log('📊 [SQL Exec] Response data:', JSON.stringify(tableData, null, 2));
 
                         if (tableData.code && tableData.message?.includes("Asynchronous execution in progress.")) {
+                            console.warn('⚠️ [SQL Exec] Async execution in progress');
                             toast.error("SQL execution took too long to respond. Please try again.");
                             return;
                         }
@@ -161,24 +175,32 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                         });
                         setMessages(appendUserMessageToMessagesList(sqlExecUserMessage));
                         setAgentState(AgentApiState.RUNNING_ANALYTICS);
-                        const data2AnalyticsResponse = await fetch(`${snowflakeUrl}/api/v2/cortex/agent:run`, {
+                        const data2AnalyticsUrl = `${snowflakeUrl}/api/v2/cortex/agent:run`;
+                        console.log('🚀 [Data2Analytics] POST', data2AnalyticsUrl);
+                        console.log('📋 [Data2Analytics] Request body:', JSON.stringify(body, null, 2));
+                        const data2AnalyticsResponse = await fetch(data2AnalyticsUrl, {
                             method: 'POST',
                             headers,
                             body: JSON.stringify(body),
                         })
+                        console.log('✅ [Data2Analytics] Response status:', data2AnalyticsResponse.status, data2AnalyticsResponse.statusText);
 
                         const data2AnalyticsStreamEvents = events(data2AnalyticsResponse);
 
                         const latestAssistantD2AMessageId = shortUUID.generate();
                         const newAssistantD2AMessage = getEmptyAssistantMessage(latestAssistantD2AMessageId);
                         for await (const event of data2AnalyticsStreamEvents) {
+                            console.log('📡 [Data2Analytics] Stream event:', event.data?.substring(0, 200) || '[empty]');
                             if (event.data === "[DONE]") {
+                                console.log('✅ [Data2Analytics] Stream complete');
                                 setAgentState(AgentApiState.IDLE);
                                 return;
                             }
 
-                            if (JSON.parse(event.data!).code) {
-                                toast.error(JSON.parse(event.data!).message);
+                            const parsedD2AData = JSON.parse(event.data!);
+                            if (parsedD2AData.code) {
+                                console.error('❌ [Data2Analytics] Error:', parsedD2AData);
+                                toast.error(parsedD2AData.message);
                                 setAgentState(AgentApiState.IDLE);
                                 return;
                             }
@@ -187,7 +209,7 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
                                 delta: {
                                     content: data2Contents
                                 }
-                            } = JSON.parse(event.data!);
+                            } = parsedD2AData;
 
                             data2Contents.forEach((content: AgentMessage['content'][number]) => {
                                 if ('text' in content) {
@@ -228,12 +250,11 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
             }
         }
     }, [agentRequestParams, authToken, messages, snowflakeUrl, toolResources]);
-    console.log("Agent API Query Hook: ", { agentState, messages, latestAssistantMessageId, handleNewMessage });
+
     return {
         agentState,
         messages,
         handleNewMessage,
         latestAssistantMessageId
     };
-    
 }
