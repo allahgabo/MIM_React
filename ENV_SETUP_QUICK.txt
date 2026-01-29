@@ -1,0 +1,143 @@
+================================================================================
+VERCEL ENVIRONMENT VARIABLES SETUP - QUICK REFERENCE
+================================================================================
+
+⚠️  ISSUE: Production failing - Environment variables not set in Vercel
+
+ERROR MESSAGE: "SNOWFLAKE_ACCOUNT environment variable not set"
+
+✅ SOLUTION: Add 5 environment variables to Vercel dashboard (5-6 minutes)
+
+================================================================================
+STEP-BY-STEP INSTRUCTIONS
+================================================================================
+
+STEP 1: Go to Vercel Dashboard
+────────────────────────────────────────────────────────────────────────────
+1. Open: https://vercel.com/dashboard
+2. Click: mim-react project
+3. Click: Settings (top right)
+4. Click: Environment Variables (left sidebar)
+
+
+STEP 2: Add 5 Environment Variables
+────────────────────────────────────────────────────────────────────────────
+
+Variable 1: SNOWFLAKE_ACCOUNT
+┌─ Name: SNOWFLAKE_ACCOUNT
+├─ Value: A3615210430571-BM71673
+└─ Environments: Check ALL (Production, Preview, Development)
+
+Variable 2: SNOWFLAKE_USER
+┌─ Name: SNOWFLAKE_USER
+├─ Value: ali
+└─ Environments: Check ALL (Production, Preview, Development)
+
+Variable 3: SNOWFLAKE_ROLE
+┌─ Name: SNOWFLAKE_ROLE
+├─ Value: ACCOUNTADMIN
+└─ Environments: Check ALL (Production, Preview, Development)
+
+Variable 4: SNOWFLAKE_RSA_PASSPHRASE
+┌─ Name: SNOWFLAKE_RSA_PASSPHRASE
+├─ Value: (leave blank - just click Add)
+└─ Environments: Check ALL (Production, Preview, Development)
+
+Variable 5: SNOWFLAKE_PRIVATE_KEY_BASE64
+┌─ Name: SNOWFLAKE_PRIVATE_KEY_BASE64
+├─ Value: [See rsa_key.p8.base64 file - copy entire contents]
+└─ Environments: Check ALL (Production, Preview, Development)
+
+
+STEP 3: Redeploy
+────────────────────────────────────────────────────────────────────────────
+1. After adding all variables, Vercel asks: "Redeploy?"
+2. Click: "Redeploy" button
+3. Wait: 1-2 minutes for build to complete
+4. Check: Deployments tab to verify success
+
+
+STEP 4: Test Production
+────────────────────────────────────────────────────────────────────────────
+
+Test JWT Endpoint:
+  URL: https://mim-react-s0v2a36pw-allahgabos-projects.vercel.app/api/jwt
+  
+  Expected Response:
+    {"token":"eyJ...", "expiresAt": 1234567890}
+  
+  If you see error instead:
+    {"error":"SNOWFLAKE_ACCOUNT environment variable not set"}
+    → Redeploy hasn't completed yet. Wait 1 more minute.
+
+Test Chat Interface:
+  1. Open: https://mim-react-s0v2a36pw-allahgabos-projects.vercel.app
+  2. Open DevTools: Press F12
+  3. Go to: Console tab
+  4. Type message: "Hello"
+  5. Look for console logs:
+     🚀 [Agent API] POST https://...
+     ✅ [Agent API] Response status: 200
+
+
+================================================================================
+BASE64 RSA KEY LOCATION
+================================================================================
+
+File: rsa_key.p8.base64 (in your code directory)
+Size: Should be ~2000 characters
+Usage: Copy ENTIRE contents for SNOWFLAKE_PRIVATE_KEY_BASE64 variable
+
+
+================================================================================
+TIMELINE
+================================================================================
+
+Step 1 (Vercel Setup):       1-2 minutes
+Step 2 (Add Variables):      2 minutes
+Step 3 (Redeploy):           1-2 minutes
+Step 4 (Test):               1-2 minutes
+────────────────────────────────────────────────
+TOTAL:                       5-6 minutes
+
+
+================================================================================
+WHAT HAPPENS AFTER
+================================================================================
+
+✅ JWT Generation Works
+   - /api/jwt returns valid token
+   - Token auto-refreshes every 60 seconds
+
+✅ Chat Interface Works
+   - Can send messages
+   - Receives responses from Snowflake Cortex Agent
+   - Tools available (if Snowflake resources created)
+
+✅ Debugging
+   - Browser console shows all API calls
+   - Comprehensive logging with emojis
+   - Easy to troubleshoot issues
+
+
+================================================================================
+FOR DETAILED INSTRUCTIONS
+================================================================================
+
+See: VERCEL_ENV_SETUP.md (full step-by-step guide with screenshots)
+
+
+================================================================================
+NEED HELP?
+================================================================================
+
+If JWT still fails after redeploy:
+1. Clear browser cache (Ctrl+Shift+Delete)
+2. Wait 2-3 minutes more (propagation delay)
+3. Try in incognito window
+4. Check Vercel Deployments tab - build status should be "Ready"
+
+If SNOWFLAKE_PRIVATE_KEY_BASE64 value is too long:
+1. It should be ~2000 characters
+2. Copy from rsa_key.p8.base64 file
+3. Paste entire contents (no truncation)
