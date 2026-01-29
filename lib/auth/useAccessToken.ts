@@ -20,6 +20,8 @@ export function useAccessToken() {
         fetchToken();
     }, []);
 
+    console.log("Access Token:", token);
+
     React.useEffect(() => {
         if (!token?.expiresAt) return;
 
