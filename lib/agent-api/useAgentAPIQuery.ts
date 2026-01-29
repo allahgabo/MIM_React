@@ -228,11 +228,12 @@ export function useAgentAPIQuery(params: AgentApiQueryParams) {
             }
         }
     }, [agentRequestParams, authToken, messages, snowflakeUrl, toolResources]);
-
+    console.log("Agent API Query Hook: ", { agentState, messages, latestAssistantMessageId, handleNewMessage });
     return {
         agentState,
         messages,
         handleNewMessage,
         latestAssistantMessageId
     };
+    
 }
